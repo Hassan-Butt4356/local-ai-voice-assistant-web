@@ -1,0 +1,33 @@
+# Environment / secrets
+.env
+
+# Generated audio
+output/
+uploads/
+*.wav
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Model / cache downloads
+*.safetensors
+.cache/
+~/.cache/pocket-tts/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

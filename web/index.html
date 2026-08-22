@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Local AI Voice Assistant</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; }
+  #chat { border: 1px solid #ddd; border-radius: 8px; padding: 12px; height: 340px; overflow-y: auto; margin-bottom: 12px; background: #fafafa; }
+  .msg { margin: 8px 0; }
+  .user { color: #1a4; font-weight: 600; }
+  .assistant { color: #147; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  input[type=text] { flex: 1; padding: 8px; font-size: 1rem; }
+  button { padding: 8px 14px; font-size: 1rem; cursor: pointer; }
+  #recordBtn.recording { background: #d33; color: #fff; }
+  #status { color: #888; font-size: 0.85rem; margin-top: 6px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+  <h1>🎙️ Local AI Voice Assistant</h1>
+  <div id="chat"></div>
+
+  <div class="row">
+    <input type="text" id="textInput" placeholder="Type a message...">
+    <button id="sendBtn">Send</button>
+    <button id="recordBtn">🎤 Record</button>
+  </div>
+  <div id="status"></div>
+
+  <audio id="player" hidden></audio>
+
+<script>
+const chatEl = document.getElementById('chat');
+const statusEl = document.getElementById('status');
+const textInput = document.getElementById('textInput');
+const player = document.getElementById('player');
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.innerHTML = `<span class="${role}">${role === 'user' ? 'You' : 'Assistant'}:</span> ${text}`;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+async function sendToServer(formData, userDisplayText) {
+  statusEl.textContent = 'Thinking...';
+  if (userDisplayText) addMessage('user', userDisplayText);
+
+  try {
+    const res = await fetch('/api/chat', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusEl.textContent = '';
+      addMessage('assistant', `[Error] ${data.error || 'Unknown error'}`);
+      return;
+    }
+
+    // If input was audio, show what was transcribed since the user typed nothing
+    if (!userDisplayText && data.transcribed_text) {
+      addMessage('user', data.transcribed_text);
+    }
+
+    addMessage('assistant', data.reply);
+    statusEl.textContent = '';
+
+    player.src = data.audio_url;
+    player.hidden = false;
+    player.play();
+  } catch (err) {
+    statusEl.textContent = '';
+    addMessage('assistant', `[Error] ${err.message}`);
+  }
+}
+
+// --- Text input ---
+document.getElementById('sendBtn').onclick = () => {
+  const text = textInput.value.trim();
+  if (!text) return;
+  const formData = new FormData();
+  formData.append('text', text);
+  textInput.value = '';
+  sendToServer(formData, text);
+};
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('sendBtn').click();
+});
+
+// --- Audio input ---
+const recordBtn = document.getElementById('recordBtn');
+let mediaRecorder = null;
+let chunks = [];
+let recording = false;
+
+recordBtn.onclick = async () => {
+  if (!recording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      chunks = [];
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('audio', blob, 'recording.webm');
+        sendToServer(formData, null); // null = show transcribed text once server responds
+        stream.getTracks().forEach(t => t.stop());
+      };
+      mediaRecorder.start();
+      recording = true;
+      recordBtn.textContent = '⏹ Stop';
+      recordBtn.classList.add('recording');
+      statusEl.textContent = 'Recording...';
+    } catch (err) {
+      statusEl.textContent = `Mic error: ${err.message}`;
+    }
+  } else {
+    mediaRecorder.stop();
+    recording = false;
+    recordBtn.textContent = '🎤 Record';
+    recordBtn.classList.remove('recording');
+  }
+};
+</script>
+</body>
+</html>
