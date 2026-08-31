@@ -4,6 +4,8 @@
 # Generated audio
 output/
 uploads/
+voices/
+.ffmpeg_bin/
 *.wav
 
 # Python

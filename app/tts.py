@@ -117,3 +117,63 @@ class PocketTTSEngine:
             raise TTSError(f"Failed to write WAV file to '{output_path}': {exc}") from exc
 
         return output_path
+
+
+    def clone_voice_from_file(self, audio_path: Path, voice_name: str, voices_dir: Path) -> Path:
+        """
+        Process a recorded/uploaded audio sample into a reusable voice
+        embedding (safetensors) and save it under `voices_dir`. Returns
+        the path to the saved embedding.
+
+        Uses Pocket TTS's official cloning flow:
+            get_state_for_audio_prompt(audio_path) -> export_model_state(...)
+        """
+        if not self.is_loaded:
+            raise TTSError("TTS engine not loaded yet; call load() first.")
+        if not audio_path.exists():
+            raise TTSError(f"Audio file not found: {audio_path}")
+
+        try:
+            from pocket_tts import export_model_state
+        except ImportError as exc:
+            raise TTSError(
+                "This version of pocket-tts does not expose export_model_state; "
+                "upgrade with `pip install -U pocket-tts`."
+            ) from exc
+
+        try:
+            logger.info("Processing voice sample '%s' for cloning...", audio_path.name)
+            voice_state = self._model.get_state_for_audio_prompt(str(audio_path))
+        except Exception as exc:
+            raise TTSError(
+                f"Failed to process voice sample. Make sure it's a clear, "
+                f"single-speaker recording of a few seconds. Original error: {exc}"
+            ) from exc
+
+        voices_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(c for c in voice_name if c.isalnum() or c in ("-", "_")).strip()
+        safe_name = safe_name or "custom_voice"
+        dest = voices_dir / f"{safe_name}.safetensors"
+
+        try:
+            export_model_state(voice_state, str(dest))
+        except Exception as exc:
+            raise TTSError(f"Failed to save cloned voice: {exc}") from exc
+
+        logger.info("Cloned voice saved to '%s'.", dest)
+        return dest
+
+    def set_active_voice(self, voice_ref: str) -> None:
+        """
+        Switch the currently active voice used by synthesize(). `voice_ref`
+        can be a preset name (e.g. "alba"), a local .wav path, or a local
+        .safetensors path (a previously cloned/exported voice).
+        """
+        if not self.is_loaded:
+            raise TTSError("TTS engine not loaded yet; call load() first.")
+
+        try:
+            self._voice_state = self._model.get_state_for_audio_prompt(voice_ref)
+            self.voice = voice_ref
+        except Exception as exc:
+            raise TTSError(f"Failed to switch to voice '{voice_ref}': {exc}") from exc

@@ -43,6 +43,7 @@ class Config:
     output_dir: Path
     output_filename: str
     sample_rate_override: int | None
+    voices_dir: Path
 
     # --- CLI behaviour ---
     exit_commands: tuple[str, ...]
@@ -89,6 +90,7 @@ class Config:
             output_dir=output_dir,
             output_filename=os.getenv("OUTPUT_FILENAME", "response.wav").strip(),
             sample_rate_override=sample_rate_override,
+            voices_dir=Path(os.getenv("VOICES_DIR", "./voices")).expanduser(),
             exit_commands=exit_commands,
         )
         config.validate()

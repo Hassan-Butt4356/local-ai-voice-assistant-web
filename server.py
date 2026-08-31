@@ -38,6 +38,27 @@ if not _ffmpeg_dst.exists():
         _ffmpeg_dst.chmod(0o755)
 os.environ["PATH"] = str(_ffmpeg_bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
+import subprocess
+
+
+def convert_to_wav(src_path: Path) -> Path:
+    """
+    Convert any browser-recorded audio (typically WebM/Opus) to a plain
+    16-bit PCM WAV file using ffmpeg, so libraries that only support WAV
+    (like Pocket TTS's audio loader) can read it.
+    """
+    dst_path = src_path.with_suffix(".wav")
+    result = subprocess.run(
+        [str(_ffmpeg_dst), "-y", "-i", str(src_path), "-ar", "24000", "-ac", "1", str(dst_path)],
+        capture_output=True,
+    )
+    if result.returncode != 0 or not dst_path.exists():
+        raise RuntimeError(
+            f"ffmpeg failed to convert audio: {result.stderr.decode(errors='ignore')[:500]}"
+        )
+    return dst_path
+
+
 from flask import Flask, jsonify, request, send_from_directory
 
 from app.config import Config, ConfigError
@@ -62,6 +83,10 @@ stt = SenseVoiceEngine(
 
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+config.voices_dir.mkdir(exist_ok=True, parents=True)
+
+# Built-in Pocket TTS voice presets (for the dropdown in the UI)
+PRESET_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 
 
 def _startup() -> None:
@@ -82,6 +107,74 @@ def index():
 @app.route("/output/<path:filename>")
 def serve_output(filename: str):
     return send_from_directory(config.output_dir.resolve(), filename)
+
+
+@app.route("/api/voices", methods=["GET"])
+def list_voices():
+    """List built-in presets and previously cloned custom voices."""
+    custom = sorted(p.stem for p in config.voices_dir.glob("*.safetensors"))
+    return jsonify({"presets": PRESET_VOICES, "custom": custom, "active": tts.voice})
+
+
+@app.route("/api/clone-voice", methods=["POST"])
+def clone_voice():
+    """
+    Accepts an audio recording ("audio" file) and a "voice_name" field,
+    turns it into a reusable voice embedding, and immediately switches
+    the assistant to speak in that voice for subsequent /api/chat calls.
+    """
+    try:
+        if "audio" not in request.files or not request.files["audio"].filename:
+            return jsonify({"error": "No audio file provided."}), 400
+
+        voice_name = (request.form.get("voice_name") or "my_voice").strip()
+        audio_file = request.files["audio"]
+        temp_path = UPLOAD_DIR / f"{uuid.uuid4().hex}_{audio_file.filename}"
+        audio_file.save(temp_path)
+
+        wav_path = None
+        try:
+            wav_path = convert_to_wav(temp_path)
+            dest = tts.clone_voice_from_file(wav_path, voice_name, config.voices_dir)
+        finally:
+            temp_path.unlink(missing_ok=True)
+            if wav_path is not None:
+                wav_path.unlink(missing_ok=True)
+
+        tts.set_active_voice(str(dest))
+
+        return jsonify({"voice_name": dest.stem, "message": f"Voice '{dest.stem}' cloned and activated."})
+
+    except TTSError as exc:
+        logger.exception("Voice cloning failed")
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Unexpected error")
+        return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+
+@app.route("/api/use-voice", methods=["POST"])
+def use_voice():
+    """Switch the active TTS voice to a preset name or a saved custom voice."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        voice_ref = (data.get("voice") or "").strip()
+        if not voice_ref:
+            return jsonify({"error": "No voice specified."}), 400
+
+        # Resolve a bare custom-voice name to its saved .safetensors file
+        candidate = config.voices_dir / f"{voice_ref}.safetensors"
+        target = str(candidate) if candidate.exists() else voice_ref
+
+        tts.set_active_voice(target)
+        return jsonify({"message": f"Active voice set to '{voice_ref}'.", "active": voice_ref})
+
+    except TTSError as exc:
+        logger.exception("Voice switch failed")
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Unexpected error")
+        return jsonify({"error": f"Unexpected error: {exc}"}), 500
 
 
 @app.route("/api/chat", methods=["POST"])

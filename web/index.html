@@ -4,17 +4,23 @@
 <meta charset="UTF-8">
 <title>Local AI Voice Assistant</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
   h1 { font-size: 1.4rem; }
-  #chat { border: 1px solid #ddd; border-radius: 8px; padding: 12px; height: 340px; overflow-y: auto; margin-bottom: 12px; background: #fafafa; }
+  h2 { font-size: 1.05rem; margin-top: 28px; }
+  #chat { border: 1px solid #ddd; border-radius: 8px; padding: 12px; height: 320px; overflow-y: auto; margin-bottom: 12px; background: #fafafa; }
   .msg { margin: 8px 0; }
   .user { color: #1a4; font-weight: 600; }
   .assistant { color: #147; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
   input[type=text] { flex: 1; padding: 8px; font-size: 1rem; }
   button { padding: 8px 14px; font-size: 1rem; cursor: pointer; }
-  #recordBtn.recording { background: #d33; color: #fff; }
+  #recordBtn.recording, #cloneRecordBtn.recording { background: #d33; color: #fff; }
   #status { color: #888; font-size: 0.85rem; margin-top: 6px; min-height: 1.2em; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 14px; background: #f7f9fc; margin-top: 8px; }
+  .sample-text { font-style: italic; background: #fff; border: 1px dashed #bbc; padding: 10px; border-radius: 6px; margin: 10px 0; }
+  select { padding: 6px; font-size: 0.95rem; }
+  #cloneStatus { color: #888; font-size: 0.85rem; margin-top: 6px; min-height: 1.2em; }
+  label { font-size: 0.85rem; color: #555; }
 </style>
 </head>
 <body>
@@ -28,6 +34,26 @@
   </div>
   <div id="status"></div>
 
+  <div class="row" style="margin-top: 14px;">
+    <label for="voiceSelect">Assistant voice:</label>
+    <select id="voiceSelect"></select>
+  </div>
+
+  <h2>🧬 Clone Your Own Voice</h2>
+  <div class="card">
+    <p>Read the passage below out loud, clearly, in a quiet room (5–15 seconds is enough):</p>
+    <div class="sample-text" id="sampleText">
+      "The quick brown fox jumps over the lazy dog. I'm testing my own voice
+      so the assistant can speak back to me in it. This is just a short
+      sample so the model has enough to work with."
+    </div>
+    <div class="row">
+      <input type="text" id="voiceNameInput" placeholder="Name this voice (e.g. my-voice)" value="my-voice">
+      <button id="cloneRecordBtn">🎤 Record Sample</button>
+    </div>
+    <div id="cloneStatus"></div>
+  </div>
+
   <audio id="player" hidden></audio>
 
 <script>
@@ -35,6 +61,8 @@ const chatEl = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const textInput = document.getElementById('textInput');
 const player = document.getElementById('player');
+const voiceSelect = document.getElementById('voiceSelect');
+const cloneStatusEl = document.getElementById('cloneStatus');
 
 function addMessage(role, text) {
   const div = document.createElement('div');
@@ -58,7 +86,6 @@ async function sendToServer(formData, userDisplayText) {
       return;
     }
 
-    // If input was audio, show what was transcribed since the user typed nothing
     if (!userDisplayText && data.transcribed_text) {
       addMessage('user', data.transcribed_text);
     }
@@ -88,28 +115,35 @@ textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('sendBtn').click();
 });
 
-// --- Audio input ---
+// --- Generic mic recorder helper ---
+async function recordAudio(onStop) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mediaRecorder = new MediaRecorder(stream);
+  const chunks = [];
+  mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    stream.getTracks().forEach(t => t.stop());
+    onStop(blob);
+  };
+  mediaRecorder.start();
+  return mediaRecorder;
+}
+
+// --- Chat voice input ---
 const recordBtn = document.getElementById('recordBtn');
-let mediaRecorder = null;
-let chunks = [];
-let recording = false;
+let chatRecorder = null;
+let chatRecording = false;
 
 recordBtn.onclick = async () => {
-  if (!recording) {
+  if (!chatRecording) {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
-      chunks = [];
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'audio/webm' });
+      chatRecorder = await recordAudio((blob) => {
         const formData = new FormData();
         formData.append('audio', blob, 'recording.webm');
-        sendToServer(formData, null); // null = show transcribed text once server responds
-        stream.getTracks().forEach(t => t.stop());
-      };
-      mediaRecorder.start();
-      recording = true;
+        sendToServer(formData, null);
+      });
+      chatRecording = true;
       recordBtn.textContent = '⏹ Stop';
       recordBtn.classList.add('recording');
       statusEl.textContent = 'Recording...';
@@ -117,12 +151,106 @@ recordBtn.onclick = async () => {
       statusEl.textContent = `Mic error: ${err.message}`;
     }
   } else {
-    mediaRecorder.stop();
-    recording = false;
+    chatRecorder.stop();
+    chatRecording = false;
     recordBtn.textContent = '🎤 Record';
     recordBtn.classList.remove('recording');
   }
 };
+
+// --- Voice cloning ---
+const cloneRecordBtn = document.getElementById('cloneRecordBtn');
+const voiceNameInput = document.getElementById('voiceNameInput');
+let cloneRecorder = null;
+let cloneRecording = false;
+
+cloneRecordBtn.onclick = async () => {
+  if (!cloneRecording) {
+    try {
+      cloneRecorder = await recordAudio(async (blob) => {
+        const voiceName = (voiceNameInput.value || 'my-voice').trim();
+        const formData = new FormData();
+        formData.append('audio', blob, 'voice_sample.webm');
+        formData.append('voice_name', voiceName);
+
+        cloneStatusEl.textContent = 'Processing your voice sample (this can take a bit)...';
+        try {
+          const res = await fetch('/api/clone-voice', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) {
+            cloneStatusEl.textContent = `[Error] ${data.error || 'Unknown error'}`;
+            return;
+          }
+          cloneStatusEl.textContent = `✅ ${data.message}`;
+          await refreshVoices(data.voice_name);
+        } catch (err) {
+          cloneStatusEl.textContent = `[Error] ${err.message}`;
+        }
+      });
+      cloneRecording = true;
+      cloneRecordBtn.textContent = '⏹ Stop';
+      cloneRecordBtn.classList.add('recording');
+      cloneStatusEl.textContent = 'Recording your sample — read the passage above...';
+    } catch (err) {
+      cloneStatusEl.textContent = `Mic error: ${err.message}`;
+    }
+  } else {
+    cloneRecorder.stop();
+    cloneRecording = false;
+    cloneRecordBtn.textContent = '🎤 Record Sample';
+    cloneRecordBtn.classList.remove('recording');
+  }
+};
+
+// --- Voice selector ---
+async function refreshVoices(selectName) {
+  try {
+    const res = await fetch('/api/voices');
+    const data = await res.json();
+    voiceSelect.innerHTML = '';
+
+    const presetGroup = document.createElement('optgroup');
+    presetGroup.label = 'Presets';
+    data.presets.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      presetGroup.appendChild(opt);
+    });
+    voiceSelect.appendChild(presetGroup);
+
+    if (data.custom.length) {
+      const customGroup = document.createElement('optgroup');
+      customGroup.label = 'My Cloned Voices';
+      data.custom.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v; opt.textContent = v;
+        customGroup.appendChild(opt);
+      });
+      voiceSelect.appendChild(customGroup);
+    }
+
+    const toSelect = selectName || data.active;
+    if (toSelect) voiceSelect.value = toSelect;
+  } catch (err) {
+    console.error('Failed to load voices', err);
+  }
+}
+
+voiceSelect.onchange = async () => {
+  try {
+    const res = await fetch('/api/use-voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice: voiceSelect.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) statusEl.textContent = `[Error] ${data.error}`;
+  } catch (err) {
+    statusEl.textContent = `[Error] ${err.message}`;
+  }
+};
+
+refreshVoices();
 </script>
 </body>
 </html>
