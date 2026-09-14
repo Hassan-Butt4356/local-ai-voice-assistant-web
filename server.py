@@ -177,6 +177,35 @@ def use_voice():
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
 
 
+@app.route("/api/tts", methods=["POST"])
+def text_to_speech():
+    """
+    Convert arbitrary pasted text directly to speech — no LLM involved.
+    Accepts JSON {"text": "..."} or a form field "text".
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or request.form.get("text") or "").strip()
+
+        if not text:
+            return jsonify({"error": "No text provided."}), 400
+
+        wav_name = f"{uuid.uuid4().hex}.wav"
+        wav_path = tts.synthesize(text, config.output_dir / wav_name)
+
+        return jsonify({
+            "text": text,
+            "audio_url": f"/output/{wav_path.name}",
+            "audio_filename": wav_path.name,
+        })
+
+    except TTSError as exc:
+        logger.exception("TTS request failed")
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Unexpected error")
+        return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:

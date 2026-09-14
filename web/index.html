@@ -21,6 +21,8 @@
   select { padding: 6px; font-size: 0.95rem; }
   #cloneStatus { color: #888; font-size: 0.85rem; margin-top: 6px; min-height: 1.2em; }
   label { font-size: 0.85rem; color: #555; }
+  .video-btn { font-size: 0.8rem; padding: 3px 8px; margin-left: 8px; }
+  video { max-width: 220px; display: block; margin-top: 8px; border-radius: 8px; }
 </style>
 </head>
 <body>
@@ -37,6 +39,17 @@
   <div class="row" style="margin-top: 14px;">
     <label for="voiceSelect">Assistant voice:</label>
     <select id="voiceSelect"></select>
+  </div>
+
+  <h2>📝 Text to Speech</h2>
+  <div class="card">
+    <p>Paste any text below — it's converted directly to speech with the current assistant voice, no chat/LLM involved.</p>
+    <textarea id="ttsInput" rows="4" style="width: 100%; padding: 8px; font-size: 1rem; box-sizing: border-box;" placeholder="Paste or type text here..."></textarea>
+    <div class="row" style="margin-top: 8px;">
+      <button id="ttsBtn">🔊 Convert to Speech</button>
+    </div>
+    <div id="ttsStatus"></div>
+    <audio id="ttsPlayer" controls hidden style="width: 100%; margin-top: 8px;"></audio>
   </div>
 
   <h2>🧬 Clone Your Own Voice</h2>
@@ -64,12 +77,55 @@ const player = document.getElementById('player');
 const voiceSelect = document.getElementById('voiceSelect');
 const cloneStatusEl = document.getElementById('cloneStatus');
 
-function addMessage(role, text) {
+function addMessage(role, text, audioFilename) {
   const div = document.createElement('div');
   div.className = 'msg';
-  div.innerHTML = `<span class="${role}">${role === 'user' ? 'You' : 'Assistant'}:</span> ${text}`;
+
+  const label = document.createElement('span');
+  label.className = role;
+  label.textContent = (role === 'user' ? 'You' : 'Assistant') + ': ';
+  div.appendChild(label);
+  div.appendChild(document.createTextNode(text));
+
+  if (role === 'assistant' && audioFilename) {
+    const videoBtn = document.createElement('button');
+    videoBtn.className = 'video-btn';
+    videoBtn.textContent = '🎬 Make Video';
+    videoBtn.onclick = () => generateVideo(audioFilename, videoBtn, div);
+    div.appendChild(videoBtn);
+  }
+
   chatEl.appendChild(div);
   chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+async function generateVideo(audioFilename, btn, container) {
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = '⏳ Rendering...';
+  try {
+    const res = await fetch('/api/generate-video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_filename: audioFilename }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      btn.textContent = originalText;
+      btn.disabled = false;
+      alert(`Video generation failed: ${data.error || 'Unknown error'}`);
+      return;
+    }
+    const video = document.createElement('video');
+    video.src = data.video_url;
+    video.controls = true;
+    container.appendChild(video);
+    btn.remove();
+  } catch (err) {
+    btn.textContent = originalText;
+    btn.disabled = false;
+    alert(`Video generation failed: ${err.message}`);
+  }
 }
 
 async function sendToServer(formData, userDisplayText) {
@@ -90,7 +146,7 @@ async function sendToServer(formData, userDisplayText) {
       addMessage('user', data.transcribed_text);
     }
 
-    addMessage('assistant', data.reply);
+    addMessage('assistant', data.reply, data.audio_filename);
     statusEl.textContent = '';
 
     player.src = data.audio_url;
@@ -155,6 +211,43 @@ recordBtn.onclick = async () => {
     chatRecording = false;
     recordBtn.textContent = '🎤 Record';
     recordBtn.classList.remove('recording');
+  }
+};
+
+// --- Plain text to speech ---
+const ttsInput = document.getElementById('ttsInput');
+const ttsBtn = document.getElementById('ttsBtn');
+const ttsStatus = document.getElementById('ttsStatus');
+const ttsPlayer = document.getElementById('ttsPlayer');
+
+ttsBtn.onclick = async () => {
+  const text = ttsInput.value.trim();
+  if (!text) return;
+
+  ttsBtn.disabled = true;
+  ttsStatus.textContent = 'Generating speech...';
+
+  try {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      ttsStatus.textContent = `[Error] ${data.error || 'Unknown error'}`;
+      return;
+    }
+
+    ttsStatus.textContent = '';
+    ttsPlayer.src = data.audio_url;
+    ttsPlayer.hidden = false;
+    ttsPlayer.play();
+  } catch (err) {
+    ttsStatus.textContent = `[Error] ${err.message}`;
+  } finally {
+    ttsBtn.disabled = false;
   }
 };
 
